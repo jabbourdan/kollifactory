@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Is Kollifactory set up correctly in this project? Read-only: changes nothing.
+
+Usage:
+  check                 check config, credentials, Jira, git/GitHub and the project's files
+  check --run-checks    also run factory/checks.sh on the current checkout (can be slow)
+
+Prints one line per check: `ok`, `warn` (works, but worth knowing) or `FAIL`
+(the factory can't run until it's fixed), each FAIL and warn with its fix.
+Exits 1 when anything FAILs.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+AGENTS = ["intake", "spec-writer", "builder", "reviewer-code", "reviewer-security",
+          "reviewer-ux", "reviewer-ui", "approver"]
+SKILLS = ["kollifactory", "init-kollifactory", "check-kollifactory"]
+INIT = "run /init-kollifactory"
+
+results = []
+
+
+def report(level, text, fix=""):
+    results.append(level)
+    print(f"  {level:<5} {text}")
+    if fix and level != "ok":
+        print(f"        fix: {fix}")
+
+
+ok = lambda text: report("ok", text)
+warn = lambda text, fix="": report("warn", text, fix)
+bad = lambda text, fix="": report("FAIL", text, fix)
+
+
+def sh(*cmd):
+    try:
+        res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+    return res.returncode, (res.stdout + res.stderr).strip()
+
+
+def section(title):
+    print(f"\n{title}")
+
+
+def check_config():
+    section("Config")
+    path = FACTORY / "config.json"
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        bad(f"factory/config.json can't be read: {e}", "restore it from the Kollifactory reference folder")
+        return None
+    missing = [k for k in ("concurrency", "max_rounds", "base_branch", "jira", "labels", "routing", "ports")
+               if k not in config]
+    if missing:
+        bad(f"factory/config.json is missing: {', '.join(missing)}", "copy those keys from the reference config.json")
+        return None
+    ok("factory/config.json is valid")
+    mode = config.get("mode", "remote")
+    if mode in ("remote", "local"):
+        ok(f"mode is {mode}: " + ("branches are pushed and PRs opened on GitHub" if mode == "remote"
+                                  else "branches stay on this computer, no PR"))
+    else:
+        bad(f'mode is "{mode}"', 'set "mode" to "remote" or "local" in factory/config.json')
+    if sys.version_info < (3, 9):
+        bad(f"python3 is {sys.version.split()[0]}", "install Python 3.9 or later")
+    return config
+
+
+def check_files(config, run_checks):
+    section("Project files")
+    gone = [f".claude/agents/{a}.md" for a in AGENTS if not (REPO / ".claude/agents" / f"{a}.md").exists()]
+    gone += [f".claude/skills/{s}/SKILL.md" for s in SKILLS if not (REPO / ".claude/skills" / s / "SKILL.md").exists()]
+    gone += [f"factory/bin/{b}" for b in ("job", "gate", "route", "with-env") if not (FACTORY / "bin" / b).exists()]
+    if gone:
+        bad(f"missing: {', '.join(gone)}", "copy them from the Kollifactory reference folder (see INSTALL.md)")
+    else:
+        ok("skills, agents and scripts are all present")
+
+    checks = FACTORY / "checks.sh"
+    if not checks.exists():
+        bad("factory/checks.sh is missing", INIT)
+    elif "has no checks yet" in checks.read_text():
+        bad("factory/checks.sh is still the placeholder, so every job would fail its checks",
+            f"{INIT}, or put the project's test, lint and build commands in it")
+    elif run_checks:
+        code, out = sh("bash", str(checks))
+        if code == 0:
+            ok("factory/checks.sh passes on the current checkout")
+        else:
+            bad(f"factory/checks.sh fails on the current checkout (exit {code})",
+                "fix the script or the project; last lines:\n          " + "\n          ".join(out.splitlines()[-5:]))
+    else:
+        ok("factory/checks.sh has the project's checks (not run; add --run-checks to run them)")
+
+    preview = config.get("preview") or {}
+    if (preview.get("command") or "").strip():
+        ok(f"the app starts with: {preview['command']}")
+    else:
+        warn("preview.command is empty, so a ready job's app won't be started for you",
+             f'{INIT}, or set it in factory/config.json, e.g. "npm run dev -- --port {{port}}"')
+
+    code, _ = sh("git", "rev-parse", "--is-inside-work-tree")
+    if code != 0:
+        bad("this folder is not a git repository", "git init, and make a first commit")
+        return False
+    not_ignored = [p for p in ("factory/jobs/x", ".worktrees/x", ".env") if sh("git", "check-ignore", "-q", p)[0] != 0]
+    if not_ignored:
+        bad(f".gitignore doesn't cover: {', '.join(p.removesuffix('/x') for p in not_ignored)}",
+            f"{INIT}, or add /factory/jobs/, /.worktrees/ and /.env to .gitignore")
+    else:
+        ok(".gitignore covers factory/jobs/, .worktrees/ and .env")
+    return True
+
+
+def check_git(config):
+    mode, base = config.get("mode", "remote"), config["base_branch"]
+    section("Git" if mode == "local" else "Git and GitHub")
+    if mode == "local":
+        if sh("git", "rev-parse", "--verify", "-q", base)[0] == 0:
+            ok(f"branch {base} exists; jobs start from it")
+        else:
+            bad(f"there is no local branch {base}", f"commit something on {base}, or fix base_branch in factory/config.json")
+        ok("local mode: GitHub and gh are not needed")
+        return
+    code, origin = sh("git", "remote", "get-url", "origin")
+    if code != 0:
+        bad("this repo has no `origin` remote", 'add one (gh repo create, or git remote add origin <url>), '
+            'or set "mode": "local" in factory/config.json')
+        return
+    ok(f"origin is {origin}")
+    if not shutil.which("gh"):
+        bad("the GitHub CLI `gh` is not installed", 'install it (brew install gh), or set "mode": "local"')
+        return
+    code, _ = sh("gh", "auth", "status")
+    if code != 0:
+        bad("gh is not logged in", "run `gh auth login`, or put GH_TOKEN in .env")
+        return
+    code, out = sh("gh", "repo", "view", "--json", "nameWithOwner,viewerPermission")
+    if code != 0:
+        bad(f"gh can't read this repo: {out.splitlines()[-1] if out else 'unknown error'}",
+            "check that origin is a GitHub repo this account can see")
+        return
+    info = json.loads(out)
+    if info["viewerPermission"] in ("ADMIN", "MAINTAIN", "WRITE"):
+        ok(f"gh can push and open PRs on {info['nameWithOwner']}")
+    else:
+        bad(f"this account has only {info['viewerPermission']} access to {info['nameWithOwner']}",
+            "use an account or token with write access")
+    sh("git", "fetch", "origin", base)
+    if sh("git", "rev-parse", "--verify", "-q", f"origin/{base}")[0] != 0:
+        bad(f"origin has no branch {base}", f"push it (git push -u origin {base}), or fix base_branch in factory/config.json")
+        return
+    ok(f"origin/{base} exists; jobs start from it")
+    tracked = sh("git", "ls-tree", "-r", "--name-only", f"origin/{base}", "factory/bin/job")[1]
+    if not tracked:
+        bad(f"the factory's files aren't on origin/{base} yet, so job folders wouldn't contain them",
+            f"commit the factory files and push {base}")
+
+
+def check_jira(config):
+    section("Jira")
+    loader = importlib.machinery.SourceFileLoader("job", str(FACTORY / "bin" / "job"))
+    spec = importlib.util.spec_from_loader("job", loader)
+    job = importlib.util.module_from_spec(spec)
+    try:
+        loader.exec_module(job)
+    except Exception as e:  # a broken job script is itself a finding
+        bad(f"factory/bin/job can't be loaded: {e}", "restore it from the Kollifactory reference folder")
+        return
+    try:
+        me = job.jira("GET", "/rest/api/2/myself")
+    except job.Refused as e:
+        text = str(e)
+        if "JIRA_EMAIL" in text:
+            bad("no Jira credentials found", f"{INIT}, or put JIRA_EMAIL and JIRA_API_TOKEN in .env")
+        else:
+            bad(f"Jira login failed on {job.jira_base()}: {text[:160]}",
+                "check jira.base_url in factory/config.json and the token in .env (new token: id.atlassian.com → Security → API tokens)")
+        return
+    ok(f"logged in to {job.jira_base()} as {me.get('displayName')}")
+
+    queue_label = config["labels"]["queue"]
+    want = config["jira"].get("in_progress_status", "In Progress")
+    projects = config["jira"].get("projects") or []
+    if not projects:
+        warn("jira.projects is empty, so tickets are taken from every project this account can see",
+             'list the projects to use in factory/config.json, e.g. "projects": ["WBI"]')
+    for key in projects:
+        try:
+            types = job.jira("GET", f"/rest/api/2/project/{key}/statuses")
+        except job.Refused:
+            bad(f"Jira project {key} can't be read", "check the key in jira.projects and this account's access")
+            continue
+        names = {s["name"].lower() for t in types for s in t.get("statuses", [])}
+        if want.lower() in names:
+            ok(f"project {key} has a \"{want}\" status")
+        else:
+            bad(f"project {key} has no status called \"{want}\"",
+                f"set jira.in_progress_status to one of: {', '.join(sorted(names))}")
+    try:
+        waiting = job.search_issues()
+    except job.Refused as e:
+        bad(f"the ticket search failed: {str(e)[:160]}", "check jira.projects in factory/config.json")
+        return
+    if waiting:
+        ok(f"{len(waiting)} open ticket(s) labeled `{queue_label}`: " + ", ".join(i["key"] for i in waiting[:8]))
+    else:
+        warn(f"no open ticket is labeled `{queue_label}`, so there is nothing to build yet",
+             f"add the label `{queue_label}` to a Jira ticket")
+
+
+def main(argv):
+    if argv and argv[0] in {"-h", "--help"}:
+        print(__doc__.strip())
+        return 0
+    if any(a != "--run-checks" for a in argv):
+        print(f"check: bad arguments: {' '.join(argv)}\n\n{__doc__.strip()}", file=sys.stderr)
+        return 2
+    print(f"Kollifactory check: {REPO}")
+    config = check_config()
+    if config:
+        if check_files(config, "--run-checks" in argv):
+            check_git(config)
+        check_jira(config)
+    fails, warns = results.count("FAIL"), results.count("warn")
+    print()
+    if fails:
+        print(f"Not ready: {fails} to fix" + (f", {warns} warning(s)" if warns else "") + ".")
+        return 1
+    print("Ready. Run /kollifactory run" + (f"  ({warns} warning(s) above)" if warns else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

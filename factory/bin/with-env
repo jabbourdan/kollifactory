@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Run a command with the factory's credentials in its environment.
+
+Usage: with-env <command> [args...]
+
+Loads KEY=value lines from <repo>/.env, then ~/.jira-token, without overriding
+variables already set, and execs the command. Agents run `gh` and `git push`
+through it so GH_TOKEN (and the Jira variables) from .env reach them.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+
+for path in (REPO / ".env", Path.home() / ".jira-token"):
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                if v.strip().strip("'\""):
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+
+if len(sys.argv) < 2:
+    sys.exit(__doc__.strip())
+os.execvp(sys.argv[1], sys.argv[1:])

@@ -86,6 +86,12 @@ command you ran and its result, or what the page showed.
   `git log --oneline`. One commit per distinct piece of work.
 - Stage explicit paths, never `git add -A`. Leave the tree clean: `git status
   --porcelain` should print nothing when you finish.
+- **When your prompt says `Mode: local`: never push, never run `gh`, never open
+  a PR.** Commit on the job branch in the worktree and stop there; skip the
+  push and PR steps below. The work stays on this machine.
+- Run every `git push` and `gh` command through `<main checkout>/factory/bin/with-env`,
+  which loads the factory's `.env` (GH_TOKEN) first, e.g.
+  `<main checkout>/factory/bin/with-env git push -u origin <branch>`.
 - Push with `git push -u origin <branch>`. Push only the job branch, never
   anything else.
 - If the branch has no PR yet (`gh pr view <branch>` fails), open it as a draft:

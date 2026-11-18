@@ -1,7 +1,7 @@
 # Kollifactory
 
 Kollifactory is a software factory for Claude Code that works through your Jira tickets. Label a ticket
-`kollifactory`, run `/factory run`, and agents decide whether it's worth building,
+`kollifactory`, run `/kollifactory run`, and agents decide whether it's worth building,
 write a spec, build it, test it with your own checks, review it, and open a
 GitHub pull request for the ticket. GitHub is used only for branches and PRs.
 The factory never merges: an approved PR is marked ready, and you merge it.
@@ -23,8 +23,8 @@ that `checks.sh` passes on `main`.
 
 You need Claude Code 2.1.257 or later, `python3`, an authenticated
 [`gh`](https://cli.github.com/) that can push to the repo, and a Jira API token:
-set `JIRA_EMAIL` and `JIRA_API_TOKEN` in your environment or in a gitignored
-`.env` at the repo root, and `jira.base_url` in `factory/config.json`.
+set `JIRA_EMAIL` and `JIRA_API_TOKEN` (or `JIRA_TOKEN`) in your environment, in a
+gitignored `.env` at the repo root, or in `~/.jira-token`, and `jira.base_url` in `factory/config.json`.
 
 ## The loop
 
@@ -51,19 +51,40 @@ approver (opus) ── APPROVE  → sync with main, gate again, PR marked ready;
 
 One Claude Code session orchestrates every job, `concurrency` at a time
 (default 3). Each job gets its own git worktree and branch. All state lives in
-`factory/jobs/`, so if the session dies, `/factory run` picks every job back up.
+`factory/jobs/`, so if the session dies, `/kollifactory run` picks every job back up.
+
+## Local or remote
+
+Set `"mode"` in `factory/config.json`, or pick per ticket with
+`/kollifactory run <KEY> local` (or `remote`):
+
+- **remote** (default): the branch is pushed and a GitHub PR is opened. When
+  approved, the PR is marked ready and you merge it on GitHub.
+- **local**: nothing is pushed and there is no PR. When approved, the branch
+  `factory/<job-id>` is ready on your machine and you merge it with `git merge`.
+  Local mode needs no GitHub remote.
+
+Either way each job is a full copy of the project in `.worktrees/<job-id>`,
+which you can open and run. When a job is ready, the factory starts the app
+from that folder: set `preview.command` in `factory/config.json` (for example
+`npm run dev -- --port {port}`) and, if a fresh folder needs it,
+`preview.setup` (for example `npm ci`). The dashboard shows the folder and a
+link to the running app. `factory/bin/job preview <job> start|stop` runs or
+stops it by hand.
 
 ## Commands
 
 ```
-/factory run          drain the queue: every open `kollifactory` ticket, `concurrency` at a time; also resumes
-/factory run <KEY>    one Jira ticket now (e.g. AI6-12)
-/factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
+/init-kollifactory          guided setup: local or remote, .env, Jira, checks, app preview
+/check-kollifactory         is everything configured? says what to fix (read-only)
+/kollifactory run           build every open `kollifactory` ticket, `concurrency` at a time; also resumes
+/kollifactory run <KEY>     one Jira ticket now (e.g. WBI-12); add `local` or `remote` to pick the mode
+/kollifactory <anything>    talk to the factory: ask about jobs, give feedback, file a feature
 ```
 
 You approve by merging the PR on GitHub; the Jira ticket stays In Progress
 until you move it. To change a ready or escalated PR, tell the
-factory what you want with `/factory`. To drop a job that waits on you or on
+factory what you want with `/kollifactory`. To drop a job that waits on you or on
 its author, tell the factory to reject it.
 
 ## What's in here

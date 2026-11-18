@@ -19,7 +19,7 @@ skim a job on the dashboard and read the detail only where it matters.
 | Piece | File | Job |
 |---|---|---|
 | Queue | GitHub issues labeled `factory` | What to build. Anyone can file an issue; only people with triage or write access can label it. |
-| Orchestrator | `.claude/skills/factory/SKILL.md` | The session that runs `/factory`. Starts jobs, spawns agents, calls the scripts. Writes nothing itself. |
+| Orchestrator | `.claude/skills/factory/SKILL.md` | The session that runs `/kollifactory`. Starts jobs, spawns agents, calls the scripts. Writes nothing itself. |
 | Agents | `.claude/agents/*.md` | One file per role. Each reads files, writes exactly one file, and replies with one line. |
 | State | `factory/jobs/<job-id>/` | `job.json` plus every agent's file. Gitignored, local to the machine running the factory. |
 | Spine | `factory/bin/job`, `gate`, `route` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. |
@@ -46,13 +46,13 @@ The legal moves are in `TRANSITIONS` at the top of `factory/bin/job`.
 
 ## Decisions
 
-**Issues are the queue; you trigger the run.** `/factory run` drains every open
+**Issues are the queue; you trigger the run.** `/kollifactory run` drains every open
 `factory` issue. Nothing runs in GitHub Actions or on a schedule: the factory
 runs on your machine, on your Claude plan, when you start it. An issue can't
 start a Claude Code session by itself, and keeping it local means your
 worktrees, dev servers and dashboard are right there.
 
-**One orchestrator for every job.** The session running `/factory run` starts up
+**One orchestrator for every job.** The session running `/kollifactory run` starts up
 to `concurrency` jobs and spawns every agent as a background subagent. There
 are no per-job orchestrators to coordinate. Its context stays small because
 agents reply with one line and the scripts print one line; the detail lives in
@@ -105,13 +105,13 @@ gated again, because another job may have merged since it was tested.
 **You approve by merging.** The approver merges what it would merge itself and
 escalates the rest with a specific question. An escalated PR is ready for
 review and its issue is labeled `factory:needs-human`. Merge it to approve, or
-tell the factory what to change with `/factory <anything>`: your words go to
+tell the factory what to change with `/kollifactory <anything>`: your words go to
 the builder as `feedback-<k>.md` and the job runs another round. To drop a
 job that waits on you or on its author, tell the factory to reject it: the
 reason goes on the issue, its PR closes, and the job moves to Done.
 
 **State is files, so runs resume.** Every fact the orchestrator needs is in
-`factory/jobs/`. If the session dies or compacts, a fresh `/factory run` reads
+`factory/jobs/`. If the session dies or compacts, a fresh `/kollifactory run` reads
 the queue and resumes every job from its stage.
 
 **Cost is measured per job.** Claude Code writes each subagent's transcript,
@@ -140,12 +140,12 @@ break this.
 
 | v1 | v2 | Asked for by |
 |---|---|---|
-| `/factory <feature>`, one job per session | `/factory run` drains the issue queue, `concurrency` jobs at once, one orchestrator | Alex; @spec2k5, @MrHossamsaraya |
+| `/kollifactory <feature>`, one job per session | `/kollifactory run` drains the issue queue, `concurrency` jobs at once, one orchestrator | Alex; @spec2k5, @MrHossamsaraya |
 | Copy-paste build prompt | One install prompt pointing at this folder | @felipeclavijo1736 |
 | Every job gets all four reviewers | Fable intake rates risk and surfaces; a script routes reviewers and models | @mptrista, @Robin-ox2mz |
 | Every verdict is an LLM opinion | `checks.sh` gates before review and before merge | @Robin-ox2mz |
 | Local `git merge`, needs a clean main checkout | A PR per issue, merged with `gh pr merge` | v1 on-camera merge failures |
-| `/factory approve` | Merge the PR on GitHub | v1 |
+| `/kollifactory approve` | Merge the PR on GitHub | v1 |
 | The spec writer can stall on questions | Intake asks on the issue and parks the job | @acidrazor |
 | Cost invisible | Cost and time per job on the dashboard and in the run summary | the most common comment |
 | No license | GPLv3, commercial licensing available | @mapledev9335 |

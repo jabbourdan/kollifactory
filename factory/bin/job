@@ -5,14 +5,22 @@ Tickets come from Jira; GitHub holds only the branch and the PR. Every stage
 change goes through `advance`, which checks the files that justify it and
 refuses anything else. Side effects that belong to a transition (Jira labels,
 status and comments, PR comments, the worktree) happen here too, so the
-orchestrator never improvises them. The factory never merges a PR: an approved
-job ends in `ready`, with its PR marked ready for a human to merge.
+orchestrator never improvises them. The factory never merges: an approved job
+ends in `ready`, for a person to merge.
+
+Each job has a mode (config.json `mode`, or `job create --local|--remote`):
+  remote   the branch is pushed and a GitHub PR is opened; `ready` marks the PR ready
+  local    nothing is pushed and no PR exists; `ready` leaves a local branch to merge
+Either way the job's code lives in its own folder, <repo>/.worktrees/<job-id>,
+and when the job is `ready` the app is started from that folder (config.json
+`preview`) so you can open it.
 
 Usage:
-  job queue                      what /factory run should do with each labeled ticket
-  job create <KEY>               new job for an open Jira ticket labeled `kollifactory`; prints the job id
+  job queue                      what /kollifactory run should do with each labeled ticket
+  job create <KEY> [--local|--remote]   new job for an open Jira ticket labeled `kollifactory`; prints the job id
   job advance <job> <stage>      move a job to <stage>, or refuse
-  job ready <job>                APPROVE → sync with the base branch, gate, push, mark the PR ready (no merge)
+  job ready <job>                APPROVE → sync with the base branch, gate, then PR ready (remote) or branch ready (local); starts the app
+  job preview <job> [start|stop] run the job's app from its folder, or stop it; prints the folder and URL
   job feedback <job>             needs-human or ready → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info, needs-human or ready → rejected, with your reason (stdin) as rejection.md
   job answer <job>               post your answer (stdin) to a needs-info question on the Jira ticket
@@ -23,8 +31,9 @@ Usage:
 
 <job> is a job id (004-dark-mode) or a Jira key (AI6-12).
 
-Jira credentials: JIRA_EMAIL and JIRA_API_TOKEN, from the environment or
-<repo>/.env. JIRA_BASE_URL overrides config.json `jira.base_url`.
+Jira credentials: JIRA_EMAIL and JIRA_API_TOKEN (or JIRA_TOKEN), from the
+environment, <repo>/.env or ~/.jira-token, in that order. JIRA_BASE_URL
+overrides config.json `jira.base_url`.
 """
 
 import base64
@@ -32,8 +41,10 @@ import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,6 +79,17 @@ TERMINAL = {"merged", "rejected"}
 WAITING = {"needs-info", "needs-human", "ready"}
 WAIT_LABEL = {"needs-info": LABELS["needs_info"], "needs-human": LABELS["needs_human"], "ready": LABELS["ready"]}
 CONCURRENCY = CONFIG["concurrency"]
+MODES = {"remote", "local"}
+PREVIEW = CONFIG.get("preview") or {}
+
+
+def is_local(job):
+    return job.get("mode", "remote") == "local"
+
+
+def base_ref(job):
+    """What the job branches from and is compared with."""
+    return BASE if is_local(job) else f"origin/{BASE}"
 
 
 class Refused(Exception):
@@ -102,15 +124,16 @@ def gh_json(*args):
 
 
 def load_env():
-    """KEY=value lines from <repo>/.env; the real environment wins."""
-    path = REPO / ".env"
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+    """KEY=value lines from <repo>/.env, then ~/.jira-token; the real environment wins."""
+    for path in (REPO / ".env", Path.home() / ".jira-token"):
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                if v.strip().strip("'\""):
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 
 def jira_base():
@@ -120,9 +143,10 @@ def jira_base():
 
 def jira(method, path, body=None, params=None):
     load_env()
-    email, token = os.environ.get("JIRA_EMAIL"), os.environ.get("JIRA_API_TOKEN")
+    email = os.environ.get("JIRA_EMAIL")
+    token = os.environ.get("JIRA_API_TOKEN") or os.environ.get("JIRA_TOKEN")
     if not (email and token):
-        raise Refused("set JIRA_EMAIL and JIRA_API_TOKEN, in the environment or in <repo>/.env")
+        raise Refused("set JIRA_EMAIL and JIRA_API_TOKEN (or JIRA_TOKEN) in the environment, <repo>/.env or ~/.jira-token")
     url = jira_base() + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(
         url, method=method,
@@ -453,6 +477,8 @@ def sync(job):
                 line = first_line(rd / f"review-{r}.md")
                 m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
                 job["reviews"][r] = m.group(1) if m else ("pending" if line is None else "invalid")
+    if job.get("preview") and not preview_alive(job):
+        job["preview"] = None
     job["cost_usd"] = cost_usd(job)
     return job
 
@@ -476,6 +502,16 @@ def git(job, *args, check=True):
 
 def pr_state(job):
     return gh_json("pr", "view", str(job["pr"]), "--json", "state")["state"]
+
+
+def is_merged(job):
+    """Remote: the PR is merged on GitHub. Local: a person merged the ready branch into the base."""
+    if not is_local(job):
+        return bool(job["pr"]) and pr_state(job) == "MERGED"
+    if job["stage"] != "ready":
+        return False
+    res = run(["git", "merge-base", "--is-ancestor", job["branch"], BASE], check=False)
+    return res.returncode == 0
 
 
 def check_reviews_done(job):
@@ -502,7 +538,7 @@ def advance(job, stage):
     intake_body = lambda: "\n".join((d / "intake.md").read_text().split("\n\n", 1)[1:]).strip()
 
     if stage == "merged":
-        require(job["pr"] and pr_state(job) == "MERGED", "the PR isn't merged")
+        require(is_merged(job), "the branch isn't merged into " + BASE if is_local(job) else "the PR isn't merged")
         if old in WAITING:
             jira_labels(job["issue"], remove=[WAIT_LABEL[old]])
 
@@ -531,9 +567,10 @@ def advance(job, stage):
         elif stage == "rejected":
             jira_labels(job["issue"], remove=[LABELS["queue"]])
         else:
-            run(["git", "fetch", "origin", BASE])
+            if not is_local(job):
+                run(["git", "fetch", "origin", BASE])
             Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
-            run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], f"origin/{BASE}"])
+            run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], base_ref(job)])
 
     elif old == "needs-info":
         require_slot(job["id"])
@@ -551,14 +588,17 @@ def advance(job, stage):
         status = first_line(d / "build.md")
         require(status == "STATUS: READY", f"build.md starts with {status!r}, not STATUS: READY")
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
-        require(int(git(job, "rev-list", "--count", f"origin/{BASE}..HEAD").stdout) > 0,
-                f"{job['branch']} has no commits on top of origin/{BASE}")
-        git(job, "fetch", "origin", job["branch"], check=False)
-        head = git(job, "rev-parse", "HEAD").stdout.strip()
-        res = git(job, "rev-parse", f"origin/{job['branch']}", check=False)
-        remote = res.stdout.strip() if res.returncode == 0 else ""
-        require(head == remote, f"{job['branch']} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
-        if not job["pr"]:
+        require(int(git(job, "rev-list", "--count", f"{base_ref(job)}..HEAD").stdout) > 0,
+                f"{job['branch']} has no commits on top of {base_ref(job)}")
+        if is_local(job):
+            pass  # local jobs are never pushed and have no PR
+        else:
+            git(job, "fetch", "origin", job["branch"], check=False)
+            head = git(job, "rev-parse", "HEAD").stdout.strip()
+            res = git(job, "rev-parse", f"origin/{job['branch']}", check=False)
+            remote = res.stdout.strip() if res.returncode == 0 else ""
+            require(head == remote, f"{job['branch']} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
+        if not job["pr"] and not is_local(job):
             prs = gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number,url")
             require(len(prs) == 1, f"expected one open PR from {job['branch']}, found {len(prs)}")
             job["pr"], job["pr_url"] = prs[0]["number"], prs[0]["url"]
@@ -638,7 +678,12 @@ def advance(job, stage):
             jira_comment(job["issue"], body)
         jira_labels(job["issue"], add=[LABELS["needs_human"]])
 
-    if stage == "ready":
+    if stage == "ready" and is_local(job):
+        jira_comment(job["issue"], f"### Factory: ready to merge (local)\n\nBranch `{job['branch']}` passed the gate and "
+                                   f"every review. It is on the operator's machine, not on GitHub, waiting for a "
+                                   f"person to merge it.\n\n{decision_body()}")
+        jira_labels(job["issue"], add=[LABELS["ready"]])
+    elif stage == "ready":
         if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
             gh("pr", "ready", str(job["pr"]))
         pr_comment(job["pr"], f"### Factory: approved, ready to merge\n\nA person merges this PR; "
@@ -646,6 +691,10 @@ def advance(job, stage):
         jira_comment(job["issue"], f"### Factory: PR ready to merge\n\nPR #{job['pr']} passed the gate and every "
                                    f"review and is waiting for a person to merge it: {job['pr_url']}")
         jira_labels(job["issue"], add=[LABELS["ready"]])
+
+    # The app runs only while a job is ready; a new round or the end of the job stops it.
+    if old == "ready" or stage in TERMINAL:
+        preview_stop(job)
 
     if stage in TERMINAL and Path(job["worktree"]).exists():
         run(["git", "worktree", "remove", "--force", job["worktree"]])
@@ -656,6 +705,62 @@ def advance(job, stage):
     return job
 
 
+# ---- Preview: the job's app, running from its folder -----------------------
+
+
+def preview_port(job):
+    n = int(job["id"].split("-")[0])
+    return CONFIG["ports"]["base"] + CONFIG["ports"]["step"] * n + 3
+
+
+def preview_alive(job):
+    pid = (job.get("preview") or {}).get("pid")
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def preview_stop(job):
+    if preview_alive(job):
+        try:
+            os.killpg(job["preview"]["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    job["preview"] = None
+
+
+def preview_start(job):
+    """Run config.json `preview.setup`, then start `preview.command` detached. Returns a one-line note."""
+    command = (PREVIEW.get("command") or "").strip()
+    if not command:
+        return "no app started: set preview.command in factory/config.json (use {port} for the port)"
+    if not Path(job["worktree"]).exists():
+        return f"no app started: {job['worktree']} doesn't exist"
+    preview_stop(job)
+    port = preview_port(job)
+    log_path = job_dir(job["id"]) / "preview.log"
+    env = dict(os.environ, PORT=str(port))
+    with log_path.open("w") as log:
+        setup = (PREVIEW.get("setup") or "").strip()
+        if setup:
+            res = subprocess.run(setup, shell=True, cwd=job["worktree"], stdout=log, stderr=subprocess.STDOUT, env=env)
+            if res.returncode != 0:
+                return f"no app started: preview.setup failed (exit {res.returncode}); see {log_path}"
+        proc = subprocess.Popen(command.replace("{port}", str(port)), shell=True, cwd=job["worktree"],
+                                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+    time.sleep(1.5)
+    if proc.poll() is not None:
+        return f"no app started: preview.command exited at once (exit {proc.returncode}); see {log_path}"
+    url = (PREVIEW.get("url") or "http://localhost:{port}/").replace("{port}", str(port))
+    job["preview"] = {"pid": proc.pid, "port": port, "url": url, "log": str(log_path), "started": now()}
+    return f"app running at {url}"
+
+
 # ---- Commands --------------------------------------------------------------
 
 
@@ -664,7 +769,7 @@ def slugify(title):
     return "-".join(words) or "issue"
 
 
-def cmd_create(key):
+def cmd_create(key, mode):
     key = key.upper()
     existing = [j for j in all_jobs() if j["issue"] == key]
     if existing:
@@ -685,6 +790,7 @@ def cmd_create(key):
     job = {
         "id": job_id, "issue": issue["key"], "title": issue["title"], "issue_url": issue["url"],
         "pr": None, "pr_url": None,
+        "mode": mode, "base_ref": BASE if mode == "local" else f"origin/{BASE}", "preview": None,
         "branch": f"factory/{job_id}",
         "worktree": str(REPO / ".worktrees" / job_id),
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
@@ -700,9 +806,9 @@ def cmd_queue():
     """Rows in the order to start them. `resume` and `new` rows fit in the
     concurrency slots; the rest show as `hold` until a running job finishes."""
     jobs = {j["issue"]: j for j in all_jobs()}
-    # A job is done once a person merges its PR on GitHub.
+    # A job is done once a person merges its PR on GitHub (remote) or its branch into the base (local).
     for j in jobs.values():
-        if j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
+        if j["stage"] not in TERMINAL and is_merged(j):
             save(advance(sync(j), "merged"))
     issues = search_issues()
     open_keys = {i["key"] for i in issues}
@@ -721,7 +827,9 @@ def cmd_queue():
             other_rows.append(("wait", n, j["id"], j["stage"], f"merge PR #{j['pr']}, or give feedback"
                                if j["pr"] else "give feedback"))
         elif j["stage"] == "ready":
-            other_rows.append(("wait", n, j["id"], j["stage"], f"PR #{j['pr']} is ready: merge it, or give feedback"))
+            other_rows.append(("wait", n, j["id"], j["stage"],
+                               (f"branch {j['branch']} is ready in {j['worktree']}" if is_local(j)
+                                else f"PR #{j['pr']} is ready") + ": merge it, or give feedback"))
         elif j["stage"] == "rejected":
             other_rows.append(("skip", n, j["id"], j["stage"], f"rejected; delete factory/jobs/{j['id']} to retry"))
         elif j["stage"] == "merged":
@@ -745,13 +853,13 @@ def cmd_queue():
 
 
 def cmd_ready(job):
-    """APPROVE → sync with the base, gate again, push, mark the PR ready. Never merges."""
+    """APPROVE → sync with the base, gate again, then PR ready (remote) or branch ready (local). Never merges."""
     sync(job)
     if job["stage"] == "approve":
         save(advance(job, "finalizing"))
     if job["stage"] != "finalizing":
         die(f"{job['id']} is in {job['stage']}, not approve or finalizing")
-    if job["pr"] and pr_state(job) == "MERGED":
+    if not is_local(job) and is_merged(job):
         save(advance(sync(job), "merged"))
         print(f"{job['id']}: PR #{job['pr']} was already merged")
         return
@@ -761,8 +869,9 @@ def cmd_ready(job):
         save(advance(sync(job), "needs-human"))
         print(f"{job['id']}: needs-human: {why.splitlines()[0]}")
 
-    git(job, "fetch", "origin", BASE)
-    merged = git(job, "merge", "--no-edit", f"origin/{BASE}", check=False)
+    if not is_local(job):
+        git(job, "fetch", "origin", BASE)
+    merged = git(job, "merge", "--no-edit", base_ref(job), check=False)
     if merged.returncode != 0:
         git(job, "merge", "--abort", check=False)
         return fail(f"The branch conflicts with {BASE}:\n\n```\n{merged.stdout.strip()}\n```")
@@ -770,12 +879,34 @@ def cmd_ready(job):
     if gate.returncode != 0:
         return fail(f"The gate failed after syncing with {BASE}. "
                     f"See round-{job['round']}/merge-checks.md.\n\n{gate.stdout.strip()}")
-    try:
-        git(job, "push", "origin", job["branch"])
-    except Refused as e:
-        return fail(f"The push failed:\n\n```\n{e}\n```")
-    save(advance(sync(job), "ready"))
-    print(f"{job['id']}: PR #{job['pr']} is ready for a person to merge; {job['issue']} stays {JIRA['in_progress_status']}")
+    if not is_local(job):
+        try:
+            git(job, "push", "origin", job["branch"])
+        except Refused as e:
+            return fail(f"The push failed:\n\n```\n{e}\n```")
+    advance(sync(job), "ready")
+    note = preview_start(job) if PREVIEW.get("auto", True) else "app not started (preview.auto is false)"
+    save(job)
+    what = f"branch {job['branch']} (local, no PR)" if is_local(job) else f"PR #{job['pr']}"
+    print(f"{job['id']}: {what} is ready for a person to merge; {job['issue']} stays {JIRA['in_progress_status']}")
+    print(f"  folder: {job['worktree']}")
+    print(f"  {note}")
+    if is_local(job):
+        print(f"  to merge: git merge {job['branch']}   (from the main checkout, on {BASE})")
+
+
+def cmd_preview(job, action):
+    if action == "start":
+        note = preview_start(job)
+    elif action == "stop":
+        preview_stop(job)
+        note = "app stopped"
+    else:
+        sync(job)
+        note = f"app running at {job['preview']['url']}" if job.get("preview") else "app not running"
+    save(job)
+    print(f"{job['id']}: {note}")
+    print(f"  folder: {job['worktree']}" + ("" if Path(job["worktree"]).exists() else " (not created yet, or removed)"))
 
 
 def cmd_feedback(job, text):
@@ -844,6 +975,7 @@ def cmd_summary(args):
 
 
 def main(argv):
+    load_env()  # before any gh call, so GH_TOKEN from .env reaches it
     if not argv or argv[0] in {"-h", "--help"}:
         print(__doc__.strip())
         return
@@ -851,8 +983,14 @@ def main(argv):
     try:
         if cmd == "queue" and not args:
             cmd_queue()
-        elif cmd == "create" and len(args) == 1 and KEY_RE.fullmatch(args[0].upper()):
-            cmd_create(args[0])
+        elif cmd == "create" and len(args) in (1, 2) and KEY_RE.fullmatch(args[0].upper()) \
+                and (len(args) == 1 or args[1] in {"--local", "--remote"}):
+            mode = args[1][2:] if len(args) == 2 else CONFIG.get("mode", "remote")
+            if mode not in MODES:
+                die(f"config.json mode is {mode!r}; use remote or local")
+            cmd_create(args[0], mode)
+        elif cmd == "preview" and len(args) in (1, 2) and (len(args) == 1 or args[1] in {"start", "stop"}):
+            cmd_preview(resolve(args[0]), args[1] if len(args) == 2 else "status")
         elif cmd == "advance" and len(args) == 2:
             job = advance(sync(resolve(args[0])), args[1])
             save(sync(job))

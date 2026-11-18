@@ -12,12 +12,10 @@ raw URL instead.
 
 Stop and tell the user if any of these fail:
 
-- It's a git repo with an `origin` on GitHub, and `gh auth status` shows a user
-  who can push to it and manage its labels.
-- Its default branch (`gh repo view --json defaultBranchRef`) exists on
-  `origin`.
+- It's a git repo with at least one commit. A GitHub `origin` is needed only
+  for remote mode; `/init-kollifactory` checks that later.
 - `claude --version` is 2.1.257 or later (the intake agent runs on Fable).
-- `python3 --version` is 3.10 or later. The scripts use only the standard
+- `python3 --version` is 3.9 or later. The scripts use only the standard
   library.
 - None of the files in step 1 already exist. If one does, show the user the
   clash and ask before overwriting.
@@ -27,7 +25,9 @@ Stop and tell the user if any of these fail:
 Copy these files to the same paths in the project, unchanged:
 
 ```
-.claude/skills/factory/SKILL.md
+.claude/skills/kollifactory/SKILL.md
+.claude/skills/init-kollifactory/SKILL.md
+.claude/skills/check-kollifactory/SKILL.md
 .claude/agents/intake.md
 .claude/agents/spec-writer.md
 .claude/agents/builder.md
@@ -41,7 +41,10 @@ factory/checks.sh
 factory/bin/job
 factory/bin/gate
 factory/bin/route
+factory/bin/check
+factory/bin/with-env
 factory/dashboard.html
+.env.example
 ```
 
 ```bash
@@ -49,11 +52,16 @@ SRC=/Users/Shared/Projects/kollifactory   # or your GitHub raw URL, using curl
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && cp "$SRC/$f" "$f"
 done
-chmod +x factory/checks.sh factory/bin/job factory/bin/gate factory/bin/route
+chmod +x factory/checks.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/check factory/bin/with-env
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `LICENSE`, `examples/` or
 `docs/`. They describe the reference, not the user's project.
+
+After copying, the three skills are available: `/init-kollifactory` (guided
+setup), `/check-kollifactory` (is everything configured?) and `/kollifactory`
+(run the factory). Section 2 below is what `/init-kollifactory` walks through;
+do it now as part of the install, asking the user the same questions.
 
 ## 2. Adapt
 
@@ -106,7 +114,7 @@ Then add a short section:
 ```markdown
 ## Kollifactory
 
-`/factory run` builds every open Jira ticket labeled `kollifactory` through
+`/kollifactory run` builds every open Jira ticket labeled `kollifactory` through
 intake → spec → build → gate → review → approve, one GitHub PR per ticket. The
 factory never merges: approved PRs are marked ready for a person to merge. State is in
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
@@ -133,11 +141,20 @@ copied in step 1 does: the skill in `.claude/skills/factory/`, the agents in
 `.claude/agents/` and the rest of `factory/` are part of the project and get
 committed, so ignore only these paths, never `.claude/` or `factory/`.
 
+**Mode and preview.** Ask the user whether jobs should be `remote` (push and
+open a GitHub PR) or `local` (branches on this machine only, no PR, no remote
+needed) and set `mode` in `factory/config.json`. Set `preview.command` to the
+project's dev-server command with `{port}` where the port goes (for example
+`npm run dev -- --port {port}`), and `preview.setup` to what a fresh checkout
+needs first (for example `npm ci`). The factory runs these in a job's folder
+when the job is ready, so the user can open the app.
+
 **Jira.** Tickets come from Jira; GitHub is only for branches and PRs. Set
 `jira.base_url` in `factory/config.json` (and optionally `jira.projects` to
 limit which projects are read). Ask the user to put `JIRA_EMAIL` and
 `JIRA_API_TOKEN` (from https://id.atlassian.com/manage-profile/security/api-tokens)
-in their environment or in `<repo>/.env`. Jira creates labels on first use, so
+in their environment, in `<repo>/.env`, or in `~/.jira-token` (where
+`JIRA_TOKEN` also works). If `~/.jira-token` already exists, nothing is needed. Jira creates labels on first use, so
 there is nothing to create: tickets labeled `kollifactory` get built, and the
 factory adds `kollifactory-needs-info`, `kollifactory-needs-human` and
 `kollifactory-ready` as jobs wait.
@@ -147,7 +164,7 @@ factory adds `kollifactory-needs-info`, `kollifactory-needs-human` and
 1. In the project root, on the current branch, `bash factory/checks.sh` exits 0.
    If it fails there, the factory can never pass a job: fix the
    script (not the project) or tell the user what's broken.
-2. `factory/bin/job queue` runs without an error.
+2. `factory/bin/check` prints `Ready` (warnings are fine).
 3. Each file in `.claude/agents/` has only these frontmatter keys: `name`,
    `description`, `tools`, `model`, and `hooks` on the builder. Claude Code
    ignores unknown keys without a warning, so a typo silently changes behaviour.
@@ -165,12 +182,12 @@ so the install must be on that branch there before the first run.
 
 Then tell the user, in a few lines:
 
-- Label one or two small Jira tickets `kollifactory`, then run `/factory run`
+- Label one or two small Jira tickets `kollifactory`, then run `/kollifactory run`
   in Claude Code from the project root.
 - Every job ends as a PR. Approved PRs are marked ready (ticket labeled
   `kollifactory-ready`); the rest wait labeled `kollifactory-needs-human`. The
   factory never merges: merge a PR on GitHub yourself, or tell the factory what
-  to change with `/factory <anything>`. Tickets stay In Progress.
+  to change with `/kollifactory <anything>`. Tickets stay In Progress.
 - Intake runs on Fable, once per ticket. Depending on their plan, Fable can
   bill to usage credits rather than the plan's included usage.
 - To start carefully, set `concurrency` to 1 in `factory/config.json` and read
