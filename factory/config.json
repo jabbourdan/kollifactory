@@ -3,10 +3,17 @@
   "max_rounds": 3,
   "base_branch": "main",
   "merge_method": "merge",
+  "jira": {
+    "base_url": "https://jaboordandan13.atlassian.net",
+    "projects": [],
+    "in_progress_status": "In Progress",
+    "issue_type": "Task"
+  },
   "labels": {
-    "queue": "factory",
-    "needs_info": "factory:needs-info",
-    "needs_human": "factory:needs-human"
+    "queue": "kollifactory",
+    "needs_info": "kollifactory-needs-info",
+    "needs_human": "kollifactory-needs-human",
+    "ready": "kollifactory-ready"
   },
   "routing": {
     "low":    { "code": "haiku" },

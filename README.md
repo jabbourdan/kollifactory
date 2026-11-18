@@ -1,10 +1,10 @@
 # Kollifactory
 
-Kollifactory is a software factory for Claude Code that works through your GitHub issues. Label an issue
-`factory`, run `/factory run`, and agents decide whether it's worth building,
+Kollifactory is a software factory for Claude Code that works through your Jira tickets. Label a ticket
+`kollifactory`, run `/factory run`, and agents decide whether it's worth building,
 write a spec, build it, test it with your own checks, review it, and open a
-pull request that closes the issue. The approver merges what it's sure of and
-hands you the rest.
+GitHub pull request for the ticket. GitHub is used only for branches and PRs.
+The factory never merges: an approved PR is marked ready, and you merge it.
 
 ## Install
 
@@ -18,33 +18,35 @@ Install Kollifactory in this project from the reference folder:
 
 Your agent reads [`INSTALL.md`](INSTALL.md), copies the skill, agents, scripts
 and dashboard, fills `factory/checks.sh` with your project's real test, lint,
-typecheck and build commands, tailors the reviewers to your stack, creates the
-GitHub labels, and checks that `checks.sh` passes on `main`.
+typecheck and build commands, tailors the reviewers to your stack, and checks
+that `checks.sh` passes on `main`.
 
-You need Claude Code 2.1.257 or later, `python3`, and an authenticated
-[`gh`](https://cli.github.com/) that can push to the repo.
+You need Claude Code 2.1.257 or later, `python3`, an authenticated
+[`gh`](https://cli.github.com/) that can push to the repo, and a Jira API token:
+set `JIRA_EMAIL` and `JIRA_API_TOKEN` in your environment or in a gitignored
+`.env` at the repo root, and `jira.base_url` in `factory/config.json`.
 
 ## The loop
 
 ```
-issues labeled `factory`
+Jira tickets labeled `kollifactory`
         │
         ▼
-intake (fable) ── NEEDS-INFO → asks the author on the issue, waits for a reply
-        │         REJECT     → says why on the issue, removes the label
-        ▼ ACCEPT, maybe rescoped; rates risk + surfaces
+intake (fable) ── NEEDS-INFO → asks the author on the ticket, waits for a reply
+        │         REJECT     → says why on the ticket, removes the label
+        ▼ ACCEPT, maybe rescoped; rates risk + surfaces; ticket → In Progress
 route (script)    picks reviewers and models from config.json
         ▼
 spec-writer (opus) → spec.md
         ▼
-builder (opus) → commits, pushes, opens a draft PR "Closes #n"
+builder (opus) → commits, pushes, opens a draft PR "<KEY>: <title>"
         ▼            ▲
 gate (script) ─FAIL──┤  factory/checks.sh; no reviewer runs on a failing build
         ▼ PASS       │
 reviewers ─CHANGES───┘  code (haiku | sonnet), + ux & ui on UI changes, + security
         ▼ all PASS
-approver (opus) ── APPROVE  → sync with main, gate again, gh pr merge
-                └─ ESCALATE → PR ready for you, issue labeled factory:needs-human
+approver (opus) ── APPROVE  → sync with main, gate again, PR marked ready; you merge it
+                └─ ESCALATE → PR ready for you, ticket labeled kollifactory-needs-human
 ```
 
 One Claude Code session orchestrates every job, `concurrency` at a time
@@ -54,12 +56,13 @@ One Claude Code session orchestrates every job, `concurrency` at a time
 ## Commands
 
 ```
-/factory run          drain the queue: every open `factory` issue, `concurrency` at a time; also resumes
-/factory run <n>      one issue now
+/factory run          drain the queue: every open `kollifactory` ticket, `concurrency` at a time; also resumes
+/factory run <KEY>    one Jira ticket now (e.g. AI6-12)
 /factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
 ```
 
-You approve by merging the PR on GitHub. To change an escalated PR, tell the
+You approve by merging the PR on GitHub; the Jira ticket stays In Progress
+until you move it. To change a ready or escalated PR, tell the
 factory what you want with `/factory`. To drop a job that waits on you or on
 its author, tell the factory to reject it.
 
@@ -80,7 +83,7 @@ its author, tell the factory to reject it.
 factory/
   config.json                 concurrency, rounds, labels, routing, protected paths, prices
   checks.sh                   your repo's checks (the installer fills it in)
-  bin/job                     the only writer of job.json; refuses illegal moves; merges
+  bin/job                     the only writer of job.json; refuses illegal moves; talks to Jira
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's reviewers and models
   dashboard.html              the board
@@ -94,10 +97,10 @@ DESIGN.md                     how it works and why
 ## Dashboard
 
 ```bash
-cd factory && python3 -m http.server
+cd factory && python3 -m http.server 8765
 ```
 
-Open <http://localhost:8000/dashboard.html>. Each job is a card with its issue
+Open <http://localhost:8765/dashboard.html>. Each job is a card with its ticket
 and PR, a row of gate and review chips per round, its risk, cost and
 time. Click a card to read every file the job wrote; each one opens with a
 short summary of what happened in that step. To see the example
@@ -124,15 +127,13 @@ They come from a test run on a small private calculator repo, with
 
 ## Cost and safety
 
-- It opens and merges real PRs and runs on your Claude plan. Start with
+- It opens real PRs (it never merges them) and runs on your Claude plan. Start with
   `concurrency: 1` and read every PR until you trust it.
-- Intake runs on Fable once per issue. Depending on your plan, Fable can bill
+- Intake runs on Fable once per ticket. Depending on your plan, Fable can bill
   to usage credits rather than your plan's included usage.
-- Only issues labeled `factory` run, and only people with triage or write
-  access can add labels. Issue text reaches the agents as quoted data, never
-  as their instructions.
-- The factory pushes only `factory/*` branches, merges only through
-  `gh pr merge`, and never deploys.
+- Only Jira tickets labeled `kollifactory` run. Ticket text reaches the agents
+  as quoted data, never as their instructions.
+- The factory pushes only `factory/*` branches, never merges, and never deploys.
 
 ## License
 

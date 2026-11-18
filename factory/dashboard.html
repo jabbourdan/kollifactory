@@ -51,7 +51,7 @@
 
   /* Board */
   .board {
-    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px;
+    display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px;
     padding: 20px 32px 40px; align-items: start;
   }
   .col { min-width: 0; }
@@ -289,12 +289,13 @@ const COLUMNS = [
   { label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
   { label: 'Build', who: 'builder · gate', stages: ['build', 'gate'] },
   { label: 'Review', who: 'routed reviewers', stages: ['review'] },
-  { label: 'Approve', who: 'approver · merge', stages: ['approve', 'merging'] },
+  { label: 'Approve', who: 'approver · gate', stages: ['approve', 'finalizing'] },
+  { label: 'Ready to merge', who: 'you merge the PR', stages: ['ready'], cls: 'human' },
   { label: 'Needs human', who: 'you', stages: ['needs-human'], cls: 'human' },
   { label: 'Done', who: 'merged · rejected', stages: ['merged', 'rejected'], cls: 'merged-col' },
 ]
 const STAGES = new Set(COLUMNS.flatMap((c) => c.stages))
-const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
+const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'finalizing'])
 const SHORT = { code: 'code', ux: 'ux', ui: 'ui', security: 'sec' }
 
 const $ = (id) => document.getElementById(id)
@@ -364,12 +365,13 @@ function elapsed(job) {
   return min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}m` : `${min}m`
 }
 
-// The example jobs keep their issue and PR numbers but have no URLs.
+// The example jobs keep their ticket and PR numbers but have no URLs.
+// Older jobs (GitHub issues) have a number; Jira jobs have a key like AI6-12.
 const link = (url, text) =>
   url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>` : `<span>${text}</span>`
 
 function links(job) {
-  const out = [link(job.issue_url, `issue #${job.issue}`)]
+  const out = [link(job.issue_url, typeof job.issue === 'number' ? `issue #${job.issue}` : esc(job.issue))]
   if (job.pr) out.push(link(job.pr_url, `PR #${job.pr}`))
   return out.join('')
 }
@@ -381,6 +383,7 @@ function card(job, rounds) {
   const [num, ...slug] = job.id.split('-')
   const flag = human ? '<span class="flag">your call</span>'
     : job.stage === 'needs-info' ? '<span class="flag wait">asked author</span>'
+    : job.stage === 'ready' ? '<span class="flag">ready to merge</span>'
     : job.stage === 'rejected' ? '<span class="flag wait">rejected</span>' : ''
   const risk = job.intake?.risk
   const meta = [
@@ -400,6 +403,7 @@ function card(job, rounds) {
       <div class="links">${links(job)}</div>
       ${rounds.length ? `<div class="rounds">${rounds.join('')}</div>` : ''}
       <div class="meta">${meta}</div>
+      ${job.stage === 'ready' ? `<div class="hint">merge PR #${job.pr} yourself<br>or give feedback: /factory &lt;anything&gt;</div>` : ''}
       ${human ? `<div class="hint">${job.pr ? `merge PR #${job.pr} to approve<br>` : ''}or give feedback: /factory &lt;anything&gt;</div>` : ''}
     </article>`
 }

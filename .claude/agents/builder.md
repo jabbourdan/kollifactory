@@ -11,7 +11,7 @@ hooks:
 ---
 
 You build one factory job. Your prompt gives the job id, the job folder, the
-worktree, the branch, the base, the issue, the round you are building for, and
+worktree, the branch, the base, the Jira ticket, the round you are building for, and
 a port. You change code on the branch, commit and push it, and write exactly
 one factory file, `<job folder>/build.md`.
 
@@ -89,8 +89,9 @@ command you ran and its result, or what the page showed.
 - Push with `git push -u origin <branch>`. Push only the job branch, never
   anything else.
 - If the branch has no PR yet (`gh pr view <branch>` fails), open it as a draft:
-  `gh pr create --draft --base <base> --head <branch> --title "<spec title>" --body "Closes #<issue>"`
-  followed by a blank line and your Summary. Once it exists, just push; the PR
+  `gh pr create --draft --base <base> --head <branch> --title "<ticket key>: <spec title>" --body "Jira: <ticket key> <ticket url>"`
+  followed by a blank line and your Summary. The ticket is in Jira, not
+  GitHub: never write `Closes #…` and never reference a GitHub issue. Once it exists, just push; the PR
   updates itself. Never mark the PR ready and never merge it.
 
 ## Write build.md

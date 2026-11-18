@@ -106,22 +106,24 @@ Then add a short section:
 ```markdown
 ## Kollifactory
 
-`/factory run` builds every open GitHub issue labeled `factory` through
-intake → spec → build → gate → review → approve, one PR per issue. State is in
+`/factory run` builds every open Jira ticket labeled `kollifactory` through
+intake → spec → build → gate → review → approve, one GitHub PR per ticket. The
+factory never merges: approved PRs are marked ready for a person to merge. State is in
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
-`factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server`, then
-open http://localhost:8000/dashboard.html.
+`factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server 8765`, then
+open http://localhost:8765/dashboard.html.
 
 Each job works in its own git worktree, a full checkout of the repo at
 `.worktrees/<job-id>` (gitignored). A tool run from the repo root that doesn't
 read `.gitignore` sees those copies too; exclude `.worktrees/` in its config.
 ```
 
-**`.gitignore`.** Append these two lines:
+**`.gitignore`.** Append these three lines (`.env` holds the Jira token):
 
 ```gitignore
 /factory/jobs/
 /.worktrees/
+/.env
 ```
 
 `factory/jobs/` is runtime state (job metadata, specs, reviews, check logs)
@@ -129,15 +131,16 @@ local to the machine running the factory. Each job's worktree is a full
 checkout in `.worktrees/<job-id>`. Neither belongs in the repo. Everything you
 copied in step 1 does: the skill in `.claude/skills/factory/`, the agents in
 `.claude/agents/` and the rest of `factory/` are part of the project and get
-committed, so ignore only these two paths, never `.claude/` or `factory/`.
+committed, so ignore only these paths, never `.claude/` or `factory/`.
 
-**Labels.** Create them on GitHub:
-
-```bash
-gh label create factory --color 5319E7 --description "Build this with Kollifactory"
-gh label create factory:needs-info --color FBCA04 --description "The factory asked the author a question"
-gh label create factory:needs-human --color D93F0B --description "The factory needs a human decision on the PR"
-```
+**Jira.** Tickets come from Jira; GitHub is only for branches and PRs. Set
+`jira.base_url` in `factory/config.json` (and optionally `jira.projects` to
+limit which projects are read). Ask the user to put `JIRA_EMAIL` and
+`JIRA_API_TOKEN` (from https://id.atlassian.com/manage-profile/security/api-tokens)
+in their environment or in `<repo>/.env`. Jira creates labels on first use, so
+there is nothing to create: tickets labeled `kollifactory` get built, and the
+factory adds `kollifactory-needs-info`, `kollifactory-needs-human` and
+`kollifactory-ready` as jobs wait.
 
 ## 3. Verify
 
@@ -162,12 +165,13 @@ so the install must be on that branch there before the first run.
 
 Then tell the user, in a few lines:
 
-- Label one or two small issues `factory`, then run `/factory run` in Claude
-  Code from the project root.
-- Every job ends as a PR. The approver merges what it approves; the rest wait
-  labeled `factory:needs-human`. Approve one by merging it on GitHub, or tell
-  the factory what to change with `/factory <anything>`.
-- Intake runs on Fable, once per issue. Depending on their plan, Fable can
+- Label one or two small Jira tickets `kollifactory`, then run `/factory run`
+  in Claude Code from the project root.
+- Every job ends as a PR. Approved PRs are marked ready (ticket labeled
+  `kollifactory-ready`); the rest wait labeled `kollifactory-needs-human`. The
+  factory never merges: merge a PR on GitHub yourself, or tell the factory what
+  to change with `/factory <anything>`. Tickets stay In Progress.
+- Intake runs on Fable, once per ticket. Depending on their plan, Fable can
   bill to usage credits rather than the plan's included usage.
 - To start carefully, set `concurrency` to 1 in `factory/config.json` and read
   every PR until they trust it.

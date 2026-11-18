@@ -3,7 +3,7 @@
 
 Usage:
   gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
-  gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
+  gate <job-id> --merge    same, as round-N/merge-checks.md (job ready runs it)
   gate --hook              builder SubagentStop hook: run the checks once, exit 2 on failure
 
 The gate runs the main checkout's factory/checks.sh inside the job's worktree,
@@ -74,7 +74,7 @@ def gate(job_id, merge):
     summary = [
         f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s",
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
-        f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
+        f"Commit {commit[:7]}" + (f", synced with the latest {CONFIG['base_branch']} before marking the PR ready" if merge else ""),
     ]
     (round_dir / f"{name}.md").write_text(
         f"GATE: {verdict}\nCOMMIT: {commit}\n\n"
