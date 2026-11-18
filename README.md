@@ -11,9 +11,11 @@ The factory never merges: an approved PR is marked ready, and you merge it.
 Open Claude Code in your project and paste:
 
 ```text
-Install Kollifactory in this project from the reference folder:
-
-/Users/Shared/Projects/kollifactory
+Install Kollifactory in this project. Follow
+https://raw.githubusercontent.com/jabbourdan/kollifactory/main/INSTALL.md
+from start to finish: copy the files, then set it up with me step by step
+(local or remote, .env, Jira, checks, app preview), then run the check and tell
+me what is left before I can run /kollifactory run.
 ```
 
 Your agent reads [`INSTALL.md`](INSTALL.md), copies the skill, agents, scripts

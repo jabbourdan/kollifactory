@@ -2,11 +2,15 @@
 
 You are a coding agent installing this factory into the user's project. Copy
 what's generic, adapt what's repo-specific, verify it, and report. Work in the
-project's root. Don't clone this repository.
+project's root. Never clone this repository into the project.
 
-The source is the folder the user pointed you at (by default
-`/Users/Shared/Projects/kollifactory`). If it's on GitHub, read files from its
-raw URL instead.
+The source is https://github.com/jabbourdan/kollifactory, unless the user
+pointed you at a local folder. Get a copy outside the project to read from:
+
+```bash
+SRC="$(mktemp -d)/kollifactory"
+git clone --depth 1 https://github.com/jabbourdan/kollifactory "$SRC"
+```
 
 ## 0. Check the project
 
@@ -48,7 +52,7 @@ factory/dashboard.html
 ```
 
 ```bash
-SRC=/Users/Shared/Projects/kollifactory   # or your GitHub raw URL, using curl
+# SRC is the copy from the top of this file, or the user's local folder
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && cp "$SRC/$f" "$f"
 done
@@ -61,7 +65,10 @@ Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `LICENSE`, `examples/` or
 After copying, the three skills are available: `/init-kollifactory` (guided
 setup), `/check-kollifactory` (is everything configured?) and `/kollifactory`
 (run the factory). Section 2 below is what `/init-kollifactory` walks through;
-do it now as part of the install, asking the user the same questions.
+do it now as part of the install: read
+`.claude/skills/init-kollifactory/SKILL.md` and follow it, asking the user its
+questions one at a time. A skill copied during this session may not be
+callable as a slash command until the next session, so follow the file.
 
 ## 2. Adapt
 
