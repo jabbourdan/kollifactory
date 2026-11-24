@@ -1,10 +1,36 @@
 # Kollifactory
 
-Kollifactory is a software factory for Claude Code that works through your Jira tickets. Label a ticket
-`kollifactory`, run `/kollifactory run`, and agents decide whether it's worth building,
-write a spec, build it, test it with your own checks, review it, and open a
-GitHub pull request for the ticket. GitHub is used only for branches and PRs.
-The factory never merges: an approved PR is marked ready, and you merge it.
+**Jira tickets in, pull requests out. You do the merging.**
+
+Kollifactory is an open-source software factory for Claude Code. Label a Jira
+ticket `kollifactory`, run `/kollifactory run`, and a team of agents decides
+whether it's worth building, writes a spec, builds it, tests it with your own
+checks, reviews it, and opens a GitHub pull request. The factory never merges:
+an approved PR is marked ready, and you merge it.
+
+![The Kollifactory dashboard: one card per job, moving from intake to done](docs/images/dashboard-board.png)
+
+It works on any project Claude Code can open, in any language. Your own test,
+lint and build commands are the gate, so the factory holds its work to the same
+bar as yours.
+
+**Contents:** [What you need](#what-you-need) · [Install](#install) ·
+[The loop](#the-loop) · [Local or remote](#local-or-remote) ·
+[Commands](#commands) · [Dashboard](#dashboard) ·
+[The example jobs](#the-example-jobs) · [Cost and safety](#cost-and-safety) ·
+[Contributing](#contributing)
+
+## What you need
+
+| | |
+|---|---|
+| **Claude Code** | 2.1.257 or later |
+| **python3** | runs the factory scripts and serves the dashboard |
+| **Jira** | an API token for the site your tickets live on |
+| **GitHub** | an authenticated [`gh`](https://cli.github.com/) that can push to the repo. Not needed in [local mode](#local-or-remote). |
+
+No Jira yet? You can still look around: copy `examples/jobs/` to
+`factory/jobs/` and open the [dashboard](#dashboard).
 
 ## Install
 
@@ -23,10 +49,11 @@ and dashboard, fills `factory/checks.sh` with your project's real test, lint,
 typecheck and build commands, tailors the reviewers to your stack, and checks
 that `checks.sh` passes on `main`.
 
-You need Claude Code 2.1.257 or later, `python3`, an authenticated
-[`gh`](https://cli.github.com/) that can push to the repo, and a Jira API token:
-set `JIRA_EMAIL` and `JIRA_API_TOKEN` (or `JIRA_TOKEN`) in your environment, in a
-gitignored `.env` at the repo root, or in `~/.jira-token`, and `jira.base_url` in `factory/config.json`.
+For Jira, set `JIRA_EMAIL` and `JIRA_API_TOKEN` (or `JIRA_TOKEN`) in your
+environment, in a gitignored `.env` at the repo root (start from
+[`.env.example`](.env.example)), or in `~/.jira-token`, and set `jira.base_url`
+in `factory/config.json`. The installer walks you through this, and
+`/check-kollifactory` tells you what is still missing.
 
 ## The loop
 
@@ -111,6 +138,7 @@ factory/
   bin/route                   risk + surfaces → the job's reviewers and models
   dashboard.html              the board
 examples/jobs/                finished jobs from a real run
+docs/images/                  the screenshots in this README
 INSTALL.md                    instructions for the installing agent
 DESIGN.md                     how it works and why
 ```
@@ -125,9 +153,16 @@ cd factory && python3 -m http.server 8765
 
 Open <http://localhost:8765/dashboard.html>. Each job is a card with its ticket
 and PR, a row of gate and review chips per round, its risk, cost and
-time. Click a card to read every file the job wrote; each one opens with a
-short summary of what happened in that step. To see the example
-jobs, copy `examples/jobs/` to `factory/jobs/` first.
+time. To see the example jobs, copy `examples/jobs/` to `factory/jobs/` first.
+
+Click a card to read every file the job wrote. Each one opens with a short
+summary of what happened in that step:
+
+![An open job showing the approver's decision and the files each step wrote](docs/images/dashboard-job.png)
+
+There is also a sortable list view and a light theme:
+
+![The list view in the light theme](docs/images/dashboard-list-light.png)
 
 Cost is the API-equivalent price of each job's agents, read from Claude Code's
 transcripts. On a subscription plan it shows where the spend goes, not what
@@ -158,8 +193,19 @@ They come from a test run on a small private calculator repo, with
   as quoted data, never as their instructions.
 - The factory pushes only `factory/*` branches, never merges, and never deploys.
 
-## License
+## Contributing
 
-[GPLv3](LICENSE). You can use, modify and share this code, and any version you
-distribute must also be released under GPLv3.
+Contributions are welcome, from a typo fix to a new reviewer.
+
+- **Found a bug or have an idea?** Open an
+  [issue](https://github.com/jabbourdan/kollifactory/issues). For a bug, say
+  what you ran, what you expected and what happened; the job's folder in
+  `factory/jobs/` usually holds the answer.
+- **Want to change something?** Fork the repo, make your change on a branch and
+  open a pull request. Small, focused PRs are the easiest to review.
+- **Not sure where to start?** [`DESIGN.md`](DESIGN.md) explains how the pieces
+  fit and why. The agents are plain Markdown files in `.claude/agents/`, so
+  changing how one behaves is a matter of editing its prompt.
+- **Stuck on setup?** Run `/check-kollifactory` and include its output in your
+  issue.
 
